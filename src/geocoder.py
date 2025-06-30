@@ -55,6 +55,7 @@ class SshiGeocoder:
                 row_dict['longitude'] = None
                 row_dict['latitude'] = None
                 row_dict['address'] = None
+                list_result.append(row_dict)
         
         df_res = pd.DataFrame(list_result)
         
@@ -62,6 +63,7 @@ class SshiGeocoder:
             lambda x: Point(x['longitude'], x['latitude']) if pd.notnull(x['longitude']) and pd.notnull(x['latitude']) else None,
             axis=1
         )
+        
         gdf_res = gpd.GeoDataFrame(
             df_res, geometry='geometry', crs="EPSG:4326")
         return gdf_res
