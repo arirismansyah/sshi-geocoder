@@ -1,7 +1,7 @@
 import pandas as pd
 import geopandas as gpd
 from tqdm import tqdm
-from shapely.geometry import Point
+from shapely.geometry import Point, Polygon, MultiPolygon
 from geopy.geocoders import Nominatim, GeocodeEarth, GoogleV3
 import folium
 
@@ -68,32 +68,83 @@ class SshiGeocoder:
             df_res, geometry='geometry', crs="EPSG:4326")
         return gdf_res
         
-    def get_intersect(self, data_location:gpd.GeoDataFrame, polygon:gpd.GeoDataFrame):
-        joined = gpd.sjoin(data_location, polygon, how='left', predicate='within')
-        return joined
-    
-    def visualize_gdf(self, gdf: gpd.GeoDataFrame, popup_column: str = None, map_location: tuple = None, zoom_start: int = 10):
+    def get_intersect(self, data_location: gpd.GeoDataFrame, polygon: gpd.GeoDataFrame):
+        data_location = data_location.dropna(subset=['geometry'])
+        # Pastikan kedua GeoDataFrame punya CRS yang sama
+        if data_location.crs != polygon.crs:
+            polygon = polygon.to_crs(data_location.crs)
 
-        if map_location is None:
-            # Try to center map on mean of points
-            if not gdf.empty and gdf.geometry.is_valid.all():
-                mean_x = gdf.geometry.x.mean()
-                mean_y = gdf.geometry.y.mean()
+        # Spatial join: cari point dalam polygon
+        joined = gpd.sjoin(
+            data_location, polygon,
+            how='left', predicate='within',
+            lsuffix='point', rsuffix='polygon'
+        )
+
+        # Rename geometry kolom biar bisa punya 2 geometry
+        joined = joined.rename(
+            columns={'geometry': 'point_geometry', 'geometry_polygon': 'polygon_geometry'})
+
+        # Ambil geometry polygon dari 'geometry_polygon' (hasil join), karena udah ke-rename otomatis
+        if 'geometry_polygon' in joined.columns:
+            joined = joined.rename(
+                columns={'geometry_polygon': 'polygon_geometry'})
+
+        # Simpan kedua geometry
+        joined['polygon_geometry'] = polygon.loc[joined['index_polygon']].geometry.values
+        joined = joined.set_geometry('point_geometry')
+
+        return joined
+
+    def visualize_gdf(self, gdf: gpd.GeoDataFrame, map_location: tuple = None, zoom_start: int = 10):
+        # Hitung center dari point_geometry
+        if map_location is None and 'point_geometry' in gdf.columns:
+            valid_points = gdf['point_geometry'][gdf['point_geometry'].notnull()]
+            if not valid_points.empty:
+                mean_x = valid_points.x.mean()
+                mean_y = valid_points.y.mean()
                 map_location = (mean_y, mean_x)
             else:
                 map_location = (0, 0)
 
         m = folium.Map(location=map_location, zoom_start=zoom_start)
 
+        # Buat layer untuk point dan polygon
+        polygon_layer = folium.FeatureGroup(name='Polygon Layer', show=True)
+        point_layer = folium.FeatureGroup(name='Point Layer', show=True)
+
         for _, row in gdf.iterrows():
-            geom = row.geometry
-            if geom and geom.geom_type == 'Point':
-                popup = str(row[popup_column]) if popup_column and popup_column in row else None
+            # Buat popup content dari semua kolom non-geometry
+            popup_data = row.drop(
+                labels=[col for col in row.index if 'geometry' in col], errors='ignore')
+            popup_html = "<br>".join(
+                [f"<b>{k}</b>: {v}" for k, v in popup_data.items()])
+
+            # Point marker
+            if 'point_geometry' in row and isinstance(row['point_geometry'], Point):
+                pt = row['point_geometry']
                 folium.Marker(
-                    location=[geom.y, geom.x],
-                    popup=popup
-                ).add_to(m)
-            elif geom and geom.geom_type in ['Polygon', 'MultiPolygon']:
-                folium.GeoJson(geom).add_to(m)
+                    location=[pt.y, pt.x],
+                    popup=folium.Popup(popup_html, max_width=300),
+                    icon=folium.Icon(color='blue', icon='info-sign')
+                ).add_to(point_layer)
+
+            # Polygon
+            if 'polygon_geometry' in row and isinstance(row['polygon_geometry'], (Polygon, MultiPolygon)):
+                folium.GeoJson(
+                    row['polygon_geometry'],
+                    name='Polygon',
+                    popup=folium.Popup(popup_html, max_width=300),
+                    style_function=lambda x: {
+                        'fillColor': 'orange',
+                        'color': 'red',
+                        'weight': 2,
+                        'fillOpacity': 0.3
+                    }
+                ).add_to(polygon_layer)
+
+        polygon_layer.add_to(m)
+        point_layer.add_to(m)
+        folium.LayerControl().add_to(m)
 
         return m
