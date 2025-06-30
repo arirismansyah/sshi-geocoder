@@ -41,7 +41,7 @@ pip install -r requirements.txt
 ## 🚀 Usage Example
 
 ```python
-from sshi_geocoder import SshiGeocoder
+from geocoder import SshiGeocoder
 import pandas as pd
 
 # Initialize geocoder
